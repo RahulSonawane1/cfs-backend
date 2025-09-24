@@ -1,0 +1,58 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy backend to VPS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "${{ secrets.SSH_PORT }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Rsync backend to server (exclude node_modules, .env)
+        run: |
+          rsync -e "ssh -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -p ${{ secrets.SSH_PORT }}" -az --delete \
+            --exclude 'node_modules' --exclude '.env' --exclude '.git' ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.REMOTE_DIR_BACKEND }}/"
+
+      - name: Install production dependencies & restart PM2
+        env:
+          REMOTE_DIR: ${{ secrets.REMOTE_DIR_BACKEND }}
+          PM2_APP: ${{ secrets.PM2_APP_NAME }}
+        run: |
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -p "${{ secrets.SSH_PORT }}" -o StrictHostKeyChecking=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" <<'SSH'
+            set -e
+            cd "${REMOTE_DIR}"
+            # ensure correct node version installed on server, optionally use nvm
+            # install production deps
+            if command -v npm >/dev/null 2>&1; then
+              npm ci --omit=dev || npm ci --only=production
+            else
+              echo "ERROR: npm not found on remote"
+              exit 2
+            fi
+            # restart pm2 app - use --update-env so environment variables from .env are reloaded by pm2
+            pm2 restart "${PM2_APP}" --update-env || pm2 start index.js --name "${PM2_APP}"
+            # give the app a moment to start
+            sleep 2
+            # health check: try local HTTP endpoint (adjust port/path if needed)
+            if command -v curl >/dev/null 2>&1; then
+              curl -sS --fail http://127.0.0.1:3001/ || (curl -sS --fail http://127.0.0.1:3001/api/canteens?site=default) || (echo "Health check failed" && exit 3)
+            else
+              echo "WARNING: curl not installed on remote; skipping HTTP health check"
+            fi
+          SSH
+
+      - name: Show remote pm2 status (for logs)
+        run: |
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -p "${{ secrets.SSH_PORT }}" "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'pm2 status || true'
