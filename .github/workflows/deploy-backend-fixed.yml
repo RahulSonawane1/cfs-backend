@@ -54,31 +54,45 @@ jobs:
 
       - name: Remote install & restart
         run: |
-          ssh -p ${{ secrets.SSH_PORT }} -o IdentitiesOnly=yes -i ~/.ssh/id_rsa ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "bash -lc '
+          # Use a heredoc piped to 'bash -s' on the remote host to avoid complex escaping
+          ssh -p ${{ secrets.SSH_PORT }} -o IdentitiesOnly=yes -i ~/.ssh/id_rsa ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "REMOTE_DIR='${{ secrets.REMOTE_DIR }}' PM2_APP_NAME='${{ secrets.PM2_APP_NAME }}' bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
-          cd \"${{ secrets.REMOTE_DIR }}\"
-          if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
-    
-          if pm2 describe \"${{ secrets.PM2_APP_NAME }}\" > /dev/null; then
-            pm2 restart \"${{ secrets.PM2_APP_NAME }}\" --update-env
+
+          echo "== remote: deploy start =="
+          cd "$REMOTE_DIR"
+
+          if [ -f package-lock.json ]; then
+            npm ci --omit=dev
           else
-            pm2 start index.js --name \"${{ secrets.PM2_APP_NAME }}\" --update-env
+            npm install --omit=dev
           fi
+
+          if pm2 describe "$PM2_APP_NAME" > /dev/null 2>&1; then
+            pm2 restart "$PM2_APP_NAME" --update-env
+          else
+            pm2 start index.js --name "$PM2_APP_NAME" --update-env
+          fi
+
           pm2 save
-    
-          # healthcheck: retry a few times (2s apart) up to ~30s
+
+          # healthcheck: retry several times (2s interval)
           ok=1
           for i in 1 2 3 4 5 6 7 8 9 10; do
             if curl -fsS http://127.0.0.1:3001/ >/dev/null 2>&1; then
-              ok=0; break
+              ok=0
+              break
             fi
             sleep 2
           done
-    
-          if [ \"$ok\" -ne 0 ]; then
+
+          if [ "$ok" -ne 0 ]; then
             echo 'Healthcheck failed — printing PM2 logs (last 200 lines):'
-            pm2 logs \"${{ secrets.PM2_APP_NAME }}\" --lines 200 || true
+            pm2 logs "$PM2_APP_NAME" --lines 200 || true
+            echo 'Also listing /root/.pm2/logs:'
+            ls -l /root/.pm2/logs || true
             exit 2
           fi
-    
+
           echo 'Healthcheck OK'
+          echo "== remote: deploy end =="
+          REMOTE_SCRIPT
