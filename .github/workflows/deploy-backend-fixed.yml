@@ -20,31 +20,38 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y rsync openssh-client
 
       - name: Setup SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          # write private key from secret (normalize CRLFs)
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          # add host key (best effort)
+          if [ -n "${{ secrets.SSH_PORT }}" ]; then
+            ssh-keyscan -p "${{ secrets.SSH_PORT }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts || true
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts || true
+          fi
+
+      - name: Runner SSH verbose debug (non-failing)
+        run: |
+          echo "=== Runner SSH verbose debug start ==="
+          ssh -vvv -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'echo RUNNER_SSH_OK' || true
+          echo "=== Runner SSH verbose debug end ==="
+
+      - name: Quick SSH connectivity test
+        run: |
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'echo SSH_OK' || true
+
+      - name: Print runner private-key fingerprint (debug)
+        run: |
+          echo "Runner: fingerprint of ~/.ssh/id_rsa (public form)"
+          ssh-keygen -y -f ~/.ssh/id_rsa 2>/dev/null | ssh-keygen -lf - || echo "Unable to read ~/.ssh/id_rsa or not a valid key"
 
       - name: Rsync project to server
-        env:
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-          REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
-          RSYNC_RSH="ssh -p ${SSH_PORT} -o IdentitiesOnly=yes -i ~/.ssh/id_rsa"
-          rsync -az --exclude='.git' --exclude='node_modules' --exclude='.env' --exclude='.github' -e "$RSYNC_RSH" ./ ${SSH_USER}@${SSH_HOST}:${REMOTE_DIR}
+          RSYNC_RSH="ssh -p ${{ secrets.SSH_PORT }} -o IdentitiesOnly=yes -i ~/.ssh/id_rsa"
+          rsync -az --exclude='.git' --exclude='node_modules' --exclude='.env' --exclude='.github' -e "$RSYNC_RSH" ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.REMOTE_DIR }}
 
       - name: Remote install & restart
-        env:
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-          REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
-          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME }}
         run: |
-          ssh -p ${SSH_PORT} -o IdentitiesOnly=yes -i ~/.ssh/id_rsa ${SSH_USER}@${SSH_HOST} "bash -lc 'cd \"${REMOTE_DIR}\" && if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi && if pm2 describe \"${PM2_APP_NAME}\" > /dev/null; then pm2 restart \"${PM2_APP_NAME}\" --update-env; else pm2 start index.js --name \"${PM2_APP_NAME}\" --update-env; fi && pm2 save && curl -fsS http://127.0.0.1:3001/ || exit 2'"
+          ssh -p ${{ secrets.SSH_PORT }} -o IdentitiesOnly=yes -i ~/.ssh/id_rsa ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "bash -lc 'cd \"${{ secrets.REMOTE_DIR }}\" && if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi && if pm2 describe \"${{ secrets.PM2_APP_NAME }}\" > /dev/null; then pm2 restart \"${{ secrets.PM2_APP_NAME }}\" --update-env; else pm2 start index.js --name \"${{ secrets.PM2_APP_NAME }}\" --update-env; fi && pm2 save && curl -fsS http://127.0.0.1:3001/ || exit 2'"
