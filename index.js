@@ -11,7 +11,10 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 app.use('/sites', sitesRouter);
-
+// Lightweight root health endpoint for CI and simple checks
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
 const dbConfig = {
 	host: process.env.DB_HOST,
 	user: process.env.DB_USER,
