@@ -77,17 +77,33 @@ jobs:
 
           pm2 save
 
-          # healthcheck: retry several times (2s interval)
+          # healthcheck: retry several times (2s interval) and accept any 2xx/3xx status
           ok=1
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsS http://127.0.0.1:3001/ >/dev/null 2>&1; then
-              ok=0
-              break
-            fi
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            # save body to temp file and capture numeric HTTP status (000 if curl itself fails)
+            STATUS=$(curl -sS -w "%{http_code}" -o /tmp/healthbody http://127.0.0.1:3001/ 2>/tmp/healthcurlerr || echo "000")
+            # accept 2xx and 3xx
+            case "$STATUS" in
+              2*|3*) ok=0 ; break ;;
+              *) echo "healthcheck attempt $i returned HTTP $STATUS" ;;
+            esac
             sleep 2
           done
 
           if [ "$ok" -ne 0 ]; then
+            echo 'Healthcheck failed — response body (if any):'
+            if [ -f /tmp/healthbody ]; then
+              echo '--- begin response body ---'
+              cat /tmp/healthbody || true
+              echo '--- end response body ---'
+            else
+              echo '/tmp/healthbody not found'
+            fi
+            if [ -s /tmp/healthcurlerr ]; then
+              echo 'curl stderr:'
+              cat /tmp/healthcurlerr || true
+            fi
+            echo 'Healthcheck failed — printing PM2 logs (last 200 lines):'
             echo 'Healthcheck failed — printing PM2 logs (last 200 lines):'
             # Tail the pm2-managed log files directly (non-streaming) to avoid keeping the SSH session open
             OUT_LOG="/root/.pm2/logs/${PM2_APP_NAME}-out.log"
