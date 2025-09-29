@@ -21,7 +21,7 @@ const dbConfig = {
 	password: process.env.DB_PASSWORD,
 	database: process.env.DB_NAME,
 };
-
+//testing 29092025
 async function getConnection() {
 	return await mysql.createConnection(dbConfig);
 }
